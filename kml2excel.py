@@ -4,7 +4,14 @@ import argparse
 import os
 from bs4 import BeautifulSoup
 import re
+import sys
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+                             QPushButton, QLabel, QLineEdit, QFileDialog, QComboBox,
+                             QProgressBar, QTextEdit, QGroupBox, QMessageBox, QCheckBox)
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
+from PyQt5.QtGui import QFont, QIcon
 
+# 原有核心解析函数保持不变
 def parse_coordinates(coords_str):
     """解析坐标字符串，提取经度、纬度和海拔"""
     if not coords_str:
@@ -87,7 +94,7 @@ def parse_plaintext_table(text):
     
     return table_data
 
-def parse_kml(kml_file):
+def parse_kml(kml_file, progress_callback=None):
     """解析KML文件并提取地点数据"""
     try:
         tree = ET.parse(kml_file)
@@ -101,8 +108,17 @@ def parse_kml(kml_file):
         
         # 查找所有Placemark元素
         placemarks = root.findall('.//kml:Placemark', ns)
+        total_placemarks = len(placemarks)
         
-        for placemark in placemarks:
+        if progress_callback:
+            progress_callback(10)  # 初始化进度
+        
+        for idx, placemark in enumerate(placemarks):
+            # 更新进度
+            if progress_callback:
+                progress = 10 + int((idx / total_placemarks) * 80)
+                progress_callback(progress)
+            
             # 提取名称
             name_elem = placemark.find('kml:name', ns)
             name = name_elem.text if name_elem is not None else ""
@@ -168,13 +184,16 @@ def parse_kml(kml_file):
             
             data.append(entry)
         
+        if progress_callback:
+            progress_callback(90)  # 解析完成
+        
         return data
     
     except Exception as e:
         print(f"解析KML文件时出错: {str(e)}")
         return None
 
-def save_to_file(data, output_file, format_type):
+def save_to_file(data, output_file, format_type, progress_callback=None):
     """将数据保存为XLSX或CSV文件"""
     if not data:
         print("没有可保存的数据")
@@ -184,11 +203,17 @@ def save_to_file(data, output_file, format_type):
         # 创建DataFrame
         df = pd.DataFrame(data)
         
+        if progress_callback:
+            progress_callback(95)  # 准备保存
+        
         # 保存文件
-        if format_type == 'xlsx':
+        if format_type in ['xls', 'xlsx']:
             df.to_excel(output_file, index=False, engine='openpyxl')
         else:  # csv
             df.to_csv(output_file, index=False, encoding='utf-8')
+        
+        if progress_callback:
+            progress_callback(100)  # 保存完成
         
         print(f"成功保存到 {output_file}")
         return True
@@ -197,39 +222,298 @@ def save_to_file(data, output_file, format_type):
         print(f"保存文件时出错: {str(e)}")
         return False
 
+# 后台处理线程
+class KmlProcessThread(QThread):
+    progress_update = pyqtSignal(int)
+    log_update = pyqtSignal(str)
+    finished_signal = pyqtSignal(bool, str)
+    
+    def __init__(self, input_file, output_file, format_type):
+        super().__init__()
+        self.input_file = input_file
+        self.output_file = output_file
+        self.format_type = format_type
+    
+    def run(self):
+        try:
+            self.log_update.emit(f"开始解析文件: {self.input_file}")
+            self.progress_update.emit(5)
+            
+            # 解析KML文件
+            kml_data = parse_kml(self.input_file, self.progress_update)
+            
+            if kml_data is None:
+                self.finished_signal.emit(False, "KML文件解析失败")
+                return
+            
+            self.log_update.emit(f"解析完成，共提取 {len(kml_data)} 个地点")
+            
+            # 保存文件
+            success = save_to_file(kml_data, self.output_file, self.format_type, self.progress_update)
+            
+            if success:
+                self.finished_signal.emit(True, f"文件已成功保存至: {self.output_file}")
+            else:
+                self.finished_signal.emit(False, "文件保存失败")
+                
+        except Exception as e:
+            self.log_update.emit(f"处理出错: {str(e)}")
+            self.finished_signal.emit(False, f"处理出错: {str(e)}")
+
+# 主窗口界面
+class Kml2ExcelGUI(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.init_ui()
+    
+    def init_ui(self):
+        # 窗口基本设置
+        self.setWindowTitle("KML转Excel/CSV工具 - 情空明月@https://mooncn.win")
+        self.setGeometry(100, 100, 800, 600)
+        self.setMinimumSize(700, 500)
+        
+        # 中心部件
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        
+        # 主布局
+        main_layout = QVBoxLayout(central_widget)
+        main_layout.setSpacing(15)
+        main_layout.setContentsMargins(20, 20, 20, 20)
+        
+        # 标题
+        title_label = QLabel("KML文件转Excel/CSV工具")
+        title_font = QFont()
+        title_font.setPointSize(16)
+        title_font.setBold(True)
+        title_label.setFont(title_font)
+        title_label.setAlignment(Qt.AlignCenter)
+        main_layout.addWidget(title_label)
+        
+        # 版权信息
+        copyright_label = QLabel("作者：情空明月 | 博客：https://mooncn.win")
+        copyright_label.setAlignment(Qt.AlignCenter)
+        copyright_label.setStyleSheet("color: #666; font-size: 12px;")
+        main_layout.addWidget(copyright_label)
+        
+        # 文件选择组
+        file_group = QGroupBox("文件设置")
+        file_layout = QVBoxLayout(file_group)
+        
+        # 输入文件选择
+        input_layout = QHBoxLayout()
+        input_label = QLabel("输入KML文件：")
+        input_label.setFixedWidth(80)
+        self.input_edit = QLineEdit()
+        self.input_edit.setPlaceholderText("请选择KML文件")
+        input_btn = QPushButton("浏览")
+        input_btn.clicked.connect(self.select_input_file)
+        input_layout.addWidget(input_label)
+        input_layout.addWidget(self.input_edit)
+        input_layout.addWidget(input_btn)
+        file_layout.addLayout(input_layout)
+        
+        # 输出文件选择
+        output_layout = QHBoxLayout()
+        output_label = QLabel("输出文件：")
+        output_label.setFixedWidth(80)
+        self.output_edit = QLineEdit()
+        self.output_edit.setPlaceholderText("请选择输出文件路径")
+        output_btn = QPushButton("浏览")
+        output_btn.clicked.connect(self.select_output_file)
+        output_layout.addWidget(output_label)
+        output_layout.addWidget(self.output_edit)
+        output_layout.addWidget(output_btn)
+        file_layout.addLayout(output_layout)
+        
+        # 格式选择
+        format_layout = QHBoxLayout()
+        format_label = QLabel("输出格式：")
+        format_label.setFixedWidth(80)
+        self.format_combo = QComboBox()
+        self.format_combo.addItems(['xlsx', 'csv', 'xls'])
+        self.format_combo.currentTextChanged.connect(self.update_output_ext)
+        format_layout.addWidget(format_label)
+        format_layout.addWidget(self.format_combo)
+        format_layout.addStretch()
+        file_layout.addLayout(format_layout)
+        
+        main_layout.addWidget(file_group)
+        
+        # 进度条
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        main_layout.addWidget(self.progress_bar)
+        
+        # 日志输出
+        log_group = QGroupBox("处理日志")
+        log_layout = QVBoxLayout(log_group)
+        self.log_text = QTextEdit()
+        self.log_text.setReadOnly(True)
+        self.log_text.setStyleSheet("font-family: Consolas; font-size: 10pt;")
+        log_layout.addWidget(self.log_text)
+        main_layout.addWidget(log_group)
+        
+        # 按钮区域
+        btn_layout = QHBoxLayout()
+        self.start_btn = QPushButton("开始转换")
+        self.start_btn.setStyleSheet("background-color: #4CAF50; color: white; padding: 8px; font-size: 14px;")
+        self.start_btn.clicked.connect(self.start_conversion)
+        
+        self.clear_btn = QPushButton("清空日志")
+        self.clear_btn.clicked.connect(self.clear_log)
+        
+        self.exit_btn = QPushButton("退出")
+        self.exit_btn.setStyleSheet("background-color: #f44336; color: white; padding: 8px; font-size: 14px;")
+        self.exit_btn.clicked.connect(self.close)
+        
+        btn_layout.addStretch()
+        btn_layout.addWidget(self.start_btn)
+        btn_layout.addWidget(self.clear_btn)
+        btn_layout.addWidget(self.exit_btn)
+        btn_layout.addStretch()
+        main_layout.addLayout(btn_layout)
+        
+        # 初始化状态
+        self.thread = None
+    
+    def select_input_file(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "选择KML文件", "", "KML文件 (*.kml);;所有文件 (*.*)"
+        )
+        if file_path:
+            self.input_edit.setText(file_path)
+            # 自动填充输出文件名
+            if not self.output_edit.text():
+                base_name = os.path.splitext(file_path)[0]
+                default_output = f"{base_name}.{self.format_combo.currentText()}"
+                self.output_edit.setText(default_output)
+    
+    def select_output_file(self):
+        current_format = self.format_combo.currentText()
+        filters = f"{current_format.upper()}文件 (*.{current_format});;所有文件 (*.*)"
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "保存文件", "", filters
+        )
+        if file_path:
+            # 确保扩展名正确
+            if not file_path.lower().endswith(f".{current_format}"):
+                file_path += f".{current_format}"
+            self.output_edit.setText(file_path)
+    
+    def update_output_ext(self):
+        """更新输出文件扩展名"""
+        if self.output_edit.text():
+            current_path = self.output_edit.text()
+            base_name = os.path.splitext(current_path)[0]
+            new_path = f"{base_name}.{self.format_combo.currentText()}"
+            self.output_edit.setText(new_path)
+    
+    def start_conversion(self):
+        """开始转换过程"""
+        input_file = self.input_edit.text().strip()
+        output_file = self.output_edit.text().strip()
+        format_type = self.format_combo.currentText()
+        
+        # 验证输入
+        if not input_file:
+            QMessageBox.warning(self, "警告", "请选择输入KML文件！")
+            return
+        
+        if not output_file:
+            QMessageBox.warning(self, "警告", "请选择输出文件路径！")
+            return
+        
+        if not os.path.exists(input_file):
+            QMessageBox.critical(self, "错误", f"输入文件不存在：{input_file}")
+            return
+        
+        # 禁用按钮防止重复点击
+        self.start_btn.setEnabled(False)
+        
+        # 重置进度条和日志
+        self.progress_bar.setValue(0)
+        self.log_text.append("\n=== 开始新的转换任务 ===")
+        
+        # 创建并启动线程
+        self.thread = KmlProcessThread(input_file, output_file, format_type)
+        self.thread.progress_update.connect(self.update_progress)
+        self.thread.log_update.connect(self.update_log)
+        self.thread.finished_signal.connect(self.process_finished)
+        self.thread.start()
+    
+    def update_progress(self, value):
+        """更新进度条"""
+        self.progress_bar.setValue(value)
+    
+    def update_log(self, message):
+        """更新日志"""
+        self.log_text.append(message)
+        # 自动滚动到最后
+        self.log_text.moveCursor(self.log_text.textCursor().End)
+    
+    def process_finished(self, success, message):
+        """处理完成回调"""
+        self.start_btn.setEnabled(True)
+        self.update_log(f"任务完成：{message}")
+        
+        if success:
+            QMessageBox.information(self, "成功", message)
+        else:
+            QMessageBox.critical(self, "失败", message)
+    
+    def clear_log(self):
+        """清空日志"""
+        self.log_text.clear()
+        self.log_text.append("日志已清空")
+
 def main():
     # 设置命令行参数
     parser = argparse.ArgumentParser(description='将KML文件转换为XLSX或CSV格式，支持解析表格内容和分离经纬度')
-    parser.add_argument('input_file', help='输入的KML文件路径')
+    parser.add_argument('input_file', nargs='?', help='输入的KML文件路径（命令行模式）')
     parser.add_argument('-o', '--output', help='输出文件路径（可选）')
-    parser.add_argument('-f', '--format', choices=['xlsx', 'csv'], default='xlsx',
+    parser.add_argument('-f', '--format', choices=['xlsx', 'csv', 'xls'], default='xlsx',
                       help='输出文件格式，默认为xlsx')
+    parser.add_argument('-gui', help='是否启动GUI界面（y/n）', default='y')
     
     args = parser.parse_args()
     
-    # 验证输入文件
-    if not os.path.exists(args.input_file):
-        print(f"错误：输入文件 '{args.input_file}' 不存在")
-        return
-    
-    # 确定输出文件路径
-    if args.output:
-        output_file = args.output
+    # 判断是否启动GUI
+    if args.gui.lower() == 'y':
+        # GUI模式
+        app = QApplication(sys.argv)
+        window = Kml2ExcelGUI()
+        window.show()
+        sys.exit(app.exec_())
     else:
-        # 使用输入文件名，更改扩展名
-        base_name = os.path.splitext(args.input_file)[0]
-        output_file = f"{base_name}.{args.format}"
-    
-    # 解析KML文件
-    print(f"正在解析 {args.input_file}...")
-    kml_data = parse_kml(args.input_file)
-    
-    if kml_data is None:
-        return
-    
-    # 保存到文件
-    save_to_file(kml_data, output_file, args.format)
+        # 命令行模式
+        if not args.input_file:
+            parser.print_help()
+            return
+        
+        # 验证输入文件
+        if not os.path.exists(args.input_file):
+            print(f"错误：输入文件 '{args.input_file}' 不存在")
+            return
+        
+        # 确定输出文件路径
+        if args.output:
+            output_file = args.output
+        else:
+            # 使用输入文件名，更改扩展名
+            base_name = os.path.splitext(args.input_file)[0]
+            output_file = f"{base_name}.{args.format}"
+        
+        # 解析KML文件
+        print(f"正在解析 {args.input_file}...")
+        kml_data = parse_kml(args.input_file)
+        
+        if kml_data is None:
+            return
+        
+        # 保存到文件
+        save_to_file(kml_data, output_file, args.format)
 
 if __name__ == "__main__":
     main()
-    
