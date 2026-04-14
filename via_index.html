@@ -1,0 +1,72 @@
+<style>
+        #info p {
+            font-family: system-ui,"微软雅黑", sans-serif;
+            font-size: 15px;
+            color: #ffffff;
+            letter-spacing: 0.1em;
+            margin: 2px 0;
+        } </style>
+<body>
+
+<div id="info">
+    <p>IP Information</p>
+    <p id="ip">IP: Loading...</p>
+    <p id="city">城市: Loading...</p>
+    <p id="region">地区: Loading...</p>
+    <p id="country">国家: Loading...</p>
+    <p id="coord">坐标: Loading...</p>
+    <p id="isp">运营商: Loading...</p>
+    <p id="asnumber">AS号: Loading...</p>
+    <p id="proxy">是否代理: Loading...</p>
+    <p id="scene">应用场景: Loading...</p>
+    <p id="risk_score">风险分数: Loading...</p>
+    <p id="risk_type">风险类型: Loading...</p>
+</div>
+
+<script>
+// 获取本机公网IP（改用国内稳定接口）
+async function getMyIP() {
+    try {
+        const res = await fetch('https://ipv4.icanhazip.com');
+         const ip = await res.text();
+         return ip.trim();
+     } catch (e) {
+         console.error('获取IPv4失败', e);
+         return '';
+     }
+}
+
+async function fetchIPInfo() {
+    try {
+        const ip = await getMyIP();
+        if (!ip) throw new Error('无法获取本机IP');
+
+        // 请求 iping 接口
+        const url = `https://api.iping.cc/v1/query?ip=${ip}&language=zh`;
+        const response = await fetch(url);
+        if (!response.ok) throw new Error('接口请求失败');
+
+        const data = await response.json();
+        const d = data.data || {};
+
+        document.getElementById('ip').textContent = `IP: ${d.ip || '未知'}`;
+        document.getElementById('city').textContent = `城市: ${d.city || '未知'}`;
+        document.getElementById('region').textContent = `地区: ${d.region || d.province || '未知'}`;
+        document.getElementById('country').textContent = `国家: ${d.country || '未知'}`;
+        document.getElementById('coord').textContent = `坐标: ${d.lng || d.longitude || '未知'}, ${d.latitude || '未知'}`;
+        document.getElementById('isp').textContent = `运营商: ${d.isp || '未知'}`;
+        document.getElementById('asnumber').textContent = `AS号: ${d.asn || d.as || '未知'}`;
+        document.getElementById('proxy').textContent = `是否代理: ${d.is_proxy ? '是' : '否'}`;
+        document.getElementById('scene').textContent = `应用场景: ${d.scene || '普通'}`;
+        document.getElementById('risk_score').textContent = `风险分数: ${d.risk_score || 0}`;
+        document.getElementById('risk_type').textContent = `风险类型: ${d.risk_type || '无'}`;
+
+    } catch (error) {
+        console.error('错误', error);
+        document.getElementById('info').innerHTML = '<p>获取IP信息失败，请稍后重试</p>';
+    }
+}
+
+window.onload = fetchIPInfo;
+</script>
+</body>
